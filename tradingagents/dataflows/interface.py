@@ -5,6 +5,7 @@ from .local import get_YFin_data, get_finnhub_news, get_finnhub_company_insider_
 from .y_finance import get_YFin_data_online, get_stock_stats_indicators_window, get_balance_sheet as get_yfinance_balance_sheet, get_cashflow as get_yfinance_cashflow, get_income_statement as get_yfinance_income_statement, get_insider_transactions as get_yfinance_insider_transactions
 from .google import get_google_news
 from .openai import get_stock_news_openai, get_global_news_openai, get_fundamentals_openai
+from .claude import get_stock_news_claude, get_global_news_claude, get_fundamentals_claude
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
     get_indicator as get_alpha_vantage_indicator,
@@ -58,6 +59,7 @@ VENDOR_LIST = [
     "local",
     "yfinance",
     "openai",
+    "claude",
     "google"
 ]
 
@@ -79,6 +81,7 @@ VENDOR_METHODS = {
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "openai": get_fundamentals_openai,
+        "claude": get_fundamentals_claude,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
@@ -99,11 +102,13 @@ VENDOR_METHODS = {
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "openai": get_stock_news_openai,
+        "claude": get_stock_news_claude,
         "google": get_google_news,
         "local": [get_finnhub_news, get_reddit_company_news, get_google_news],
     },
     "get_global_news": {
         "openai": get_global_news_openai,
+        "claude": get_global_news_claude,
         "local": get_reddit_global_news
     },
     "get_insider_sentiment": {
