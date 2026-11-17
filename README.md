@@ -151,6 +151,21 @@ desk gem-study --start 2023-01-01     # les règles « pépites » prédisent-el
 | G4 | Dislocation de cointégration | paire cointégrée (p < 0,05), \|z\| du spread > 2,5, demi-vie < 30 j : l'actif est la jambe bon marché |
 | G5 | Compression de volatilité | volatilité 20 j dans le décile bas de l'année, avec une tendance 120 j significative |
 
+**Les pépites prédisent-elles quelque chose ?** L'étude d'événements `desk gem-study` porte sur 2023-2026 : 198 screens hebdomadaires, 10 paires, 540 pépites. Rapport : [`reports/gem_study.md`](reports/gem_study.md).
+
+| Règle | Événements | Excès 7 j (t) | Excès 30 j (t) |
+|---|---|---|---|
+| Toutes | 540 | -0,33 % (-1,0) | -1,54 % (-1,9) |
+| G1 tendance émergente | 229 | +0,29 % (+0,5) | -0,93 % (-0,6) |
+| G2 cassure + volume | 58 | -1,50 % (-1,2) | -3,94 % (-1,2) |
+| G4 cointégration | 12 | -1,15 % (-1,6) | +2,30 % (+1,7) |
+| G5 compression de vol. | 239 | -0,56 % (-1,8) | -1,76 % (-2,7) |
+
+Conclusion honnête : **aucune règle ne prédit de surperformance**. G5 tend même à sous-performer. Les règles repèrent des situations *inhabituelles*, pas des opportunités. Les seuils ne sont pas réajustés sur ces rendements, ce serait du surapprentissage. En pratique :
+- utilisez `desk screen` comme tableau de bord ;
+- réservez `--llm` à une lecture qualitative ponctuelle, plafonnée (`--max-llm`) ;
+- préférez `--no-last-resort`, puisque rien ne montre que le LLM tranche mieux que HOLD quand les statistiques sont ambiguës.
+
 **Ce que les chiffres disent aujourd'hui** :
 - **Desk LLM seul** (BTC-EUR, juillet-novembre 2026, période non contaminée) : 20 décisions sur 20 à HOLD, 0 % d'exposition, environ 3,70 $ dépensés, pendant que le buy & hold faisait +11 %.
 - **Statistiques seules** sur 2024-2026 : 151 décisions, dont 53 claires et 98 ambiguës. En mode hybride, ces 98 seraient soumises au LLM, soit environ 19 $ sur 3 ans.
