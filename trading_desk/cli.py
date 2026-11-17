@@ -113,6 +113,68 @@ async def _evaluate(args: argparse.Namespace) -> int:
     return 0 if ev.viable else 2
 
 
+async def _paper(args: argparse.Namespace) -> int:
+    from .paper import STRATEGIES, PaperTrader, revolutx_quote
+
+    trader = PaperTrader(args.folder, YahooProvider(), revolutx_quote)
+    if args.action == "run":
+        entry = await trader.run(force=args.force)
+        for name, b in entry["books"].items():
+            orders = ", ".join(f"{o['side']} {o['pair']} {o['eur']:.0f}EUR" for o in b["orders"]) or "-"
+            print(f"  {name:<7} NAV {b['nav']:>10.2f}  {'rebalanced' if b['rebalanced'] else 'held      '}  {orders}")
+        print(f"\nJournal: {trader.journal_path}")
+        return 0
+    st = trader.status()
+    if not st["books"]:
+        print("No paper trading yet: run `desk paper run` once a day.")
+        return 0
+    print(f"Forward window {st['start']} -> {st['last']} ({st['weeks']} weeks)\n")
+    print(f"  {'book':<7} {'NAV':>10} {'return':>8} {'max DD':>8} {'Sharpe':>7}  verdict")
+    for name, s in st["books"].items():
+        sharpe = f"{s['sharpe']:.2f}" if s["sharpe"] is not None else "n/a"
+        verdict = s.get("verdict", "benchmark")
+        print(f"  {name:<7} {s['nav']:>10.2f} {s['return'] * 100:>+7.1f}% {s['max_drawdown'] * 100:>+7.1f}% {sharpe:>7}  {verdict}")
+    return 0
+
+
+async def _portfolio(args: argparse.Namespace) -> int:
+    from .paper import STRATEGIES, Book, PaperTrader, plan_orders, revolutx_quote
+    from .portfolio import EXTENDED
+
+    if args.from_revolutx:
+        from .revolutx import RevolutXClient
+
+        client = RevolutXClient.from_env()
+        balances = await client.balances()
+        cash = sum(float(b["total"]) for b in balances if b["currency"] == "EUR")
+        holdings = {f"{b['currency']}-EUR": float(b["total"]) for b in balances if f"{b['currency']}-EUR" in EXTENDED and float(b["total"]) > 0}
+    else:
+        cash = args.cash
+        holdings = {k.strip().upper(): float(v) for k, v in (kv.split("=") for kv in args.holdings.split(",") if kv)} if args.holdings else {}
+
+    trader = PaperTrader(".", YahooProvider(), revolutx_quote)
+    targets = (await trader.targets(date.today()))[args.strategy]
+    quotes = {p: await revolutx_quote(p) for p in EXTENDED}
+    book = Book(cash, holdings)
+    nav, current = book.nav(quotes), book.weights(quotes)
+    print(f"Strategy {args.strategy} (lookbacks {STRATEGIES[args.strategy].lookbacks}), NAV {nav:.2f} EUR, signals from completed bars up to {date.today()}\n")
+    print(f"  {'pair':<9} {'current':>8} {'target':>8}")
+    for pair in sorted(set(targets) | set(current), key=lambda p: -targets.get(p, 0)):
+        print(f"  {pair:<9} {current.get(pair, 0) * 100:>7.1f}% {targets.get(pair, 0) * 100:>7.1f}%")
+    print(f"  {'EUR':<9} {cash / nav * 100 if nav else 0:>7.1f}% {(1 - sum(targets.values())) * 100:>7.1f}%")
+    orders = plan_orders(book, targets, quotes)
+    if not orders:
+        print("\nNo order needed (every gap is below 2% of the portfolio).")
+        return 0
+    print("\nOrders to place on Revolut X (limit post-only at the touch = 0% maker fee; market = 0.09% taker):")
+    for o in orders:
+        q = quotes[o.pair]
+        limit = q.bid if o.side == "buy" else q.ask
+        print(f"  {o.side.upper():<4} {o.pair:<9} {o.qty:.8f} (~{o.eur:.2f} EUR)   limit {limit}   market ~{o.price}")
+    print("\nNothing was sent: this command never places orders.")
+    return 0
+
+
 async def _doctor(args: argparse.Namespace) -> int:
     settings = DeskSettings.load(args.config)
     ok = True
@@ -190,6 +252,17 @@ def _parser() -> argparse.ArgumentParser:
     e.add_argument("--end", type=date.fromisoformat, help="End of the out-of-sample window (default: protocol date)")
     e.add_argument("--output", default="reports/strategy_evaluation.md")
 
+    pp = sub.add_parser("paper", help="Forward paper trading of v1/v2 on live Revolut X prices (run once a day)")
+    pp.add_argument("action", choices=["run", "status"])
+    pp.add_argument("--folder", default="paper")
+    pp.add_argument("--force", action="store_true", help="Run again today")
+
+    pf = sub.add_parser("portfolio", help="Today's target weights and the Revolut X orders to reach them (never sends orders)")
+    pf.add_argument("--strategy", choices=["v1", "v2"], default="v1")
+    pf.add_argument("--cash", type=float, default=1000.0, help="EUR cash")
+    pf.add_argument("--holdings", help="e.g. BTC-EUR=0.01,ETH-EUR=0.5")
+    pf.add_argument("--from-revolutx", action="store_true", help="Read balances with REVOLUTX_API_KEY")
+
     d = sub.add_parser("doctor", help="Check the Claude CLI and the data source")
     d.add_argument("--config")
     return p
@@ -198,7 +271,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
-    handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "doctor": _doctor}[args.command]
+    handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "paper": _paper,
+               "portfolio": _portfolio, "doctor": _doctor}[args.command]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

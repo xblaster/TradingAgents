@@ -106,6 +106,26 @@ Chaque décision du LLM est sauvegardée (`results/<TICKER>/<date>/`), avec un r
 
 **Contamination.** Déclarez `knowledge_cutoff` : le rapport indique alors si la période est vierge, c'est-à-dire postérieure à la coupure, ou contaminée. Seule une période vierge mesure vraiment le desk LLM.
 
+## Stratégie systématique Revolut X
+
+Le desk LLM est lent et coûteux, et son edge n'est pas démontré. En parallèle, le dépôt contient une **stratégie de tendance multi-actifs** sur 10 paires EUR de Revolut X. Elle est entièrement déterministe, et elle est évaluée selon un **protocole pré-enregistré** ([STRATEGY.md](STRATEGY.md), commité avant l'évaluation).
+
+```bash
+desk evaluate                       # protocole complet, verdict PASS/FAIL → reports/strategy_evaluation.md
+desk portfolio --cash 5000 --holdings BTC-EUR=0.02   # poids cibles du jour + ordres à passer (n'envoie rien)
+desk portfolio --from-revolutx      # idem, à partir de vos soldes réels (clé API)
+desk paper run                      # paper trading prospectif v1/v2 aux prix bid/ask live de Revolut X (1 fois par jour)
+desk paper status                   # performance prospective et verdict P1-P3 après 26 semaines
+```
+
+**Résultat historique honnête : NON VIABLE.** Le rapport est dans [`reports/strategy_evaluation.md`](reports/strategy_evaluation.md).
+- **Hors échantillon 2023-2026** : CAGR +16,7 % avec un drawdown max de -36 %, contre +26,7 % et -59 % pour l'équipondéré. Le Sharpe reste inférieur (0,64 contre 0,72), et le gain de drawdown manque le seuil exigé de 0,7 point.
+- **Robustesse** : seules 5 variantes sur 12 passent.
+- **Ce qui fonctionne** : la protection en marché baissier (2025 à -0,7 % contre -16,5 %) et l'in-sample.
+- **Ce qui ne fonctionne pas** : battre le marché haussier de 2023-2024.
+
+Les paramètres n'ont **pas** été retouchés pour passer le test. La suite est une validation prospective de 26 semaines, sur des données que personne n'a encore vues.
+
 ## Revolut X
 
 `trading_desk/revolutx.py` est un client REST minimal. Il signe chaque requête en Ed25519 (horodatage + méthode + chemin + query + body), conformément à la spécification Revolut X. Il couvre le carnet d'ordres public, les chandeliers, les paires, les tickers et les soldes.
@@ -157,7 +177,7 @@ print(run.decision.action, run.decision.target_position_pct, run.cost_usd)
 ## Développement
 
 ```bash
-pytest   # 71 tests, ~1 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
+pytest   # 87 tests, ~1 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
 ```
 
 ```
@@ -169,6 +189,9 @@ trading_desk/
   guardrails.py
   backtest.py  simulateur commun, baselines, exécution à l'open t+1, stops, coûts
   revolutx.py  client Revolut X (signature Ed25519)
+  portfolio.py stratégie de tendance multi-actifs + simulateur de portefeuille
+  evaluation.py protocole pré-enregistré (STRATEGY.md) → verdict
+  paper.py     paper trading prospectif aux prix Revolut X
   report.py    Markdown
   cli.py       desk analyze | backtest | doctor
 ```
