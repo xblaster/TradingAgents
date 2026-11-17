@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trading_desk.data.indicators import technical_summary
-from trading_desk.data.models import Snapshot
+from trading_desk.data.indicators import market_structure, technical_summary
+from trading_desk.data.models import Snapshot, asset_class_of, periods_per_year
 from trading_desk.llm import LLMError, LLMRequest, LLMResponse
 
 
@@ -32,9 +32,11 @@ class FakeProvider:
 
     async def snapshot(self, ticker: str, as_of: date, lookback_days: int = 400) -> Snapshot:
         bars = self.bars.loc[pd.Timestamp(as_of - timedelta(days=lookback_days)) : pd.Timestamp(as_of)]
+        ac = asset_class_of(ticker)
         return Snapshot(
-            ticker=ticker, as_of=as_of, mode="historical", last_bar_date=bars.index[-1].date(),
-            last_close=float(bars["Close"].iloc[-1]), technicals=technical_summary(bars),
+            ticker=ticker, as_of=as_of, mode="historical", asset_class=ac, last_bar_date=bars.index[-1].date(),
+            last_close=float(bars["Close"].iloc[-1]), technicals=technical_summary(bars, periods_per_year(ac)),
+            market=market_structure(bars) if ac == "crypto" else None,
         )
 
 

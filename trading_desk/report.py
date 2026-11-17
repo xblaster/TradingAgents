@@ -58,28 +58,49 @@ def render_markdown(run: "DeskRun") -> str:
     return "\n".join(out) + "\n"
 
 
+STRATEGY_LABELS = {
+    "llm": "LLM desk",
+    "buy_hold": "Buy & hold (capped)",
+    "trend_sma": "Trend SMA20/50 (capped)",
+    "momentum": "Momentum 3m (capped)",
+    "buy_hold_100": "Buy & hold 100% (reference)",
+}
+
+
+def strategy_table(result: "BacktestResult") -> list[str]:
+    rows = [
+        "| strategy | return | CAGR | vol | Sharpe | max DD | exposure | trades | fees |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
+    for name, m in result.strategies.items():
+        rows.append(
+            f"| {STRATEGY_LABELS.get(name, name)} | {_pct(m['total_return'])} | {_pct(m['cagr'])} | {_pct(m['ann_vol'])} | "
+            f"{m['sharpe']:.2f} | {_pct(m['max_drawdown'])} | {m['avg_exposure'] * 100:.0f}% | {m['trades']:.0f} | {m['fees'] * 100:.2f}% |"
+        )
+    return rows
+
+
 def render_backtest_markdown(result: "BacktestResult") -> str:
-    m = result.metrics
     out = [
-        f"# Backtest {result.ticker}: {result.start} to {result.end}",
+        f"# Backtest {result.ticker} ({result.asset_class}): {result.start} to {result.end}",
+        "",
+        f"Decision every {result.every} bars, fills at next open, costs {result.cost_bps:g} bps per unit of turnover, "
+        f"position cap {result.max_position_pct:g}% for every capped strategy.",
         "",
         *[f"> {w}" for w in result.warnings],
         "",
-        "| metric | strategy | buy & hold |",
-        "|---|---|---|",
-        f"| total return | {_pct(m['total_return'])} | {_pct(m['buy_hold_return'])} |",
-        f"| annualized vol | {_pct(m['ann_vol'])} | {_pct(m['buy_hold_ann_vol'])} |",
-        f"| Sharpe (rf=0) | {m['sharpe']:.2f} | {m['buy_hold_sharpe']:.2f} |",
-        f"| max drawdown | {_pct(m['max_drawdown'])} | {_pct(m['buy_hold_max_drawdown'])} |",
-        "",
-        f"Average exposure {m['avg_exposure'] * 100:.1f}%, {m['trades']} trades, {m['stop_hits']} stop hits, "
-        f"{m['decisions']} decisions, LLM cost ${m['llm_cost_usd']:.2f}.",
-        "",
-        "| date | action | target | conviction | stop | notes |",
-        "|---|---|---|---|---|---|",
+        *strategy_table(result),
     ]
-    out += [
-        f"| {d['date']} | {d['action']} | {d['target_position_pct']:.1f}% | {d['conviction']:.2f} | {d['stop_loss'] or ''} | {'; '.join(d['adjustments'])[:120]} |"
-        for d in result.decisions
-    ]
+    llm = result.strategies.get("llm")
+    if llm:
+        out += [
+            "", f"LLM desk: {llm['decisions']:.0f} decisions, {llm['stop_hits']:.0f} stop hits, LLM cost ${llm['llm_cost_usd']:.2f}.",
+            "", "## LLM decisions", "",
+            "| date | action | target | conviction | stop | notes |",
+            "|---|---|---|---|---|---|",
+        ]
+        out += [
+            f"| {d['date']} | {d['action']} | {d['target_position_pct']:.1f}% | {d['conviction']:.2f} | {d['stop_loss'] or ''} | {'; '.join(d['adjustments'])[:120]} |"
+            for d in result.decisions
+        ]
     return "\n".join(out) + "\n"

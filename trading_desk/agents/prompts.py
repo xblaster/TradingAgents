@@ -15,9 +15,17 @@ Ground rules:
 
 TECHNICAL = """\
 You are the technical analyst on a trading desk. You assess trend, momentum, volatility and
-relative strength versus the S&P 500 (SPY) from price-derived indicators. Prefer confluence of
-signals over any single indicator, and flag overextension (RSI, distance from moving averages,
-Bollinger %B) as well as trend breaks.
+relative strength versus the benchmark (SPY for stocks, BTC for altcoins; none for BTC itself)
+from price-derived indicators. Prefer confluence of signals over any single indicator, and flag
+overextension (RSI, distance from moving averages, Bollinger %B) as well as trend breaks.
+"""
+
+MARKET_STRUCTURE = """\
+You are the crypto market-structure analyst on a trading desk. Crypto assets have no financial
+statements: you assess the regime instead. Use volatility regime, participation (volume trend,
+share of up days), distance and time from the recent high, co-movement with BTC, and, when present,
+the live Revolut X order book (spread, depth, imbalance). Say whether conditions favour trend
+following, mean reversion, or staying out, and whether liquidity is adequate.
 """
 
 FUNDAMENTAL = """\
@@ -68,9 +76,17 @@ of the portfolio; target_position_pct is where you want it after acting. Rules:
 - Positions are long-only: SELL means reducing or closing an existing position.
 """
 
+CRYPTO_CONTEXT = """\
+Context: this is a spot crypto pair traded on Revolut X. The market trades 24/7, moves several
+times faster than equities, and every trade pays exchange fees plus spread: avoid churning a
+position for small changes in view.
+"""
 
-def system_prompt(role: str, *, as_of: str, language: str, web: bool = False) -> str:
+
+def system_prompt(role: str, *, as_of: str, language: str, web: bool = False, crypto: bool = False) -> str:
     parts = [role]
+    if crypto:
+        parts.append(CRYPTO_CONTEXT)
     if web:
         parts.append(NEWS_WEB.format(as_of=as_of))
     parts.append(GROUNDING.format(as_of=as_of, language=language))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from datetime import date
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -19,6 +20,8 @@ class LLMSettings(BaseModel):
     max_retries: int = 2
     max_concurrency: int = 4
     cache_dir: Path | None = Path(".desk_cache/llm")
+    # Training-data cutoff of the models you use. Backtests starting after it are uncontaminated.
+    knowledge_cutoff: date | None = None
 
 
 class RiskLimits(BaseModel):

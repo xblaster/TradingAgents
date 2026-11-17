@@ -2,12 +2,15 @@
 
 Un desk de trading multi-agents qui raisonne avec **Claude Code en ligne de commande** (`claude -p`), sur des données de marché **point-in-time**, et qui **échoue fermé** : en cas de doute ou d'erreur, il ne trade pas.
 
+Il couvre les actions (`AAPL`) et les **paires crypto de [Revolut X](https://developer.revolut.com/docs/api/revolut-x-crypto-exchange)** (`BTC-EUR`, `ETH-EUR`…). Il est livré avec un **backtest** qui compare le desk LLM à des stratégies simples, dans les mêmes conditions.
+
 ```
             ┌──────────────── données (Python, déterministe) ────────────────┐
             │  prix ≤ date · indicateurs · statements publiés · SPY · news   │
             └───────────────────────────────┬────────────────────────────────┘
                      ┌──────────────────────┼──────────────────────┐   en parallèle
-                 technique             fondamental              news (+WebSearch en live)
+                 technique      fondamental (actions)       news (+WebSearch en live)
+                                ou structure de marché (crypto)
                      └──────────────────────┼──────────────────────┘
                                  bull ⇄ bear  (N rounds)
                                             │
@@ -69,9 +72,52 @@ desk analyze AAPL --date 2026-06-12 --position 8 --json
 # Modèles moins chers
 desk analyze MSFT --fast-model haiku --deep-model sonnet
 
-# Backtest walk-forward : décision tous les 5 jours, exécution à l'open suivant
-desk backtest MSFT --start 2026-09-01 --end 2026-10-31 --every 5
+# Crypto Revolut X : le carnet d'ordres live est inclus dans l'analyse
+desk analyze BTC-EUR --lang French
 ```
+
+## Backtest
+
+```bash
+# Baselines seules : gratuit, quelques secondes, sur des années
+desk backtest BTC-EUR --start 2022-01-01 --no-llm --max-position 100 --every 1
+
+# Desk LLM contre baselines, sur une période postérieure à la date de coupure des modèles
+desk backtest BTC-EUR --start 2026-07-01 --every 7 --max-position 100 \
+  --fast-model sonnet --deep-model sonnet --knowledge-cutoff 2026-06-30
+```
+
+Les mêmes règles s'appliquent à toutes les stratégies :
+
+- **Décision à la clôture de t**, avec les seules données disponibles jusqu'à t (testé).
+- **Exécution à l'open de t+1.** Le stop-loss est exécuté au prix du stop, ou à l'open en cas de gap.
+- **Coûts sur le turnover** : 15 pb par défaut en crypto (frais taker Revolut X + spread), 5 pb pour les actions. Les dérives de moins de 1 % du portefeuille ne sont pas rééquilibrées.
+- **Même plafond de position** (`--max-position`) pour toutes les stratégies. Sans ça, « le desk bat le marché » voudrait juste dire « le desk était plus investi ».
+
+| Stratégie | Règle |
+|---|---|
+| `llm` | Le desk complet, avec sa taille de position et son stop |
+| `buy_hold` | Toujours investi au plafond |
+| `trend_sma` | Investi si clôture > SMA50 et SMA20 > SMA50 |
+| `momentum` | Investi si la performance sur 3 mois est positive |
+| `buy_hold_100` | Référence : 100 % investi, sans plafond |
+
+Chaque décision du LLM est sauvegardée (`results/<TICKER>/<date>/`), avec un rapport global, `equity.csv` et `backtest.json`.
+
+**Contamination.** Déclarez `knowledge_cutoff` : le rapport indique alors si la période est vierge, c'est-à-dire postérieure à la coupure, ou contaminée. Seule une période vierge mesure vraiment le desk LLM.
+
+## Revolut X
+
+`trading_desk/revolutx.py` est un client REST minimal. Il signe chaque requête en Ed25519 (horodatage + méthode + chemin + query + body), conformément à la spécification Revolut X. Il couvre le carnet d'ordres public, les chandeliers, les paires, les tickers et les soldes.
+
+```bash
+openssl genpkey -algorithm ed25519 -out ~/.config/revolut-x/private.pem && chmod 600 ~/.config/revolut-x/private.pem
+openssl pkey -in ~/.config/revolut-x/private.pem -pubout   # à coller dans Revolut X > Profil > Clés API
+export REVOLUTX_API_KEY=...                               # la clé que Revolut X vous rend
+desk doctor
+```
+
+La clé privée ne quitte jamais votre machine. Le passage d'ordres n'est **pas encore branché** : il arrivera avec une couche broker (paper, puis réel derrière des garde-fous explicites).
 
 Les résultats sont écrits dans `results/<TICKER>/<date>/report.md` et `run.json`. Configuration complète : `desk.example.toml`.
 
@@ -104,14 +150,14 @@ print(run.decision.action, run.decision.target_position_pct, run.cost_usd)
 
 - **Biais de look-ahead des LLM.** Des données point-in-time n'empêchent pas un modèle de *se souvenir* de ce qui s'est passé. Un backtest sur une période antérieure à la date de coupure des modèles est un test de plomberie, pas la preuve d'un edge.
 - **Le desk est conservateur par construction.** Le PM préfère HOLD quand les signaux divergent, et la conviction minimale est de 0,55. Sur nos essais, il est resté hors marché sur des hausses modestes. C'est un choix de design, réglable via `risk.min_conviction`, qu'il ne faut pas optimiser sur un backtest.
-- **Données Yahoo.** Environ 5 trimestres d'états financiers seulement. Les prix sont ajustés des splits et dividendes, ce qui constitue un léger look-ahead. Pas de news historiques.
+- **Données Yahoo.** Environ 5 trimestres d'états financiers seulement. Les prix sont ajustés des splits et dividendes, ce qui constitue un léger look-ahead. Pas de news historiques. En crypto, l'historique vient de Yahoo (même marché, autre carnet) : les chandeliers Revolut X demandent une clé API.
 - **Mono-ticker, long only.** Pas de gestion de portefeuille multi-lignes, pas de vente à découvert.
 - **Ce n'est pas un conseil en investissement.** Ne branchez pas ceci sur un compte réel sans une validation sérieuse hors échantillon.
 
 ## Développement
 
 ```bash
-pytest   # 49 tests, ~1 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
+pytest   # 71 tests, ~1 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
 ```
 
 ```
@@ -121,7 +167,8 @@ trading_desk/
   agents/      schemas.py (Pydantic = JSON schema), prompts.py, runner.py
   pipeline.py  orchestration et échec fermé
   guardrails.py
-  backtest.py  walk-forward, exécution à l'open t+1, stops, coûts
+  backtest.py  simulateur commun, baselines, exécution à l'open t+1, stops, coûts
+  revolutx.py  client Revolut X (signature Ed25519)
   report.py    Markdown
   cli.py       desk analyze | backtest | doctor
 ```

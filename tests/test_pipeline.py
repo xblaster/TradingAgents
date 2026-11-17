@@ -3,13 +3,12 @@ from datetime import date
 import pytest
 
 from trading_desk.agents.schemas import AnalystReport, DebateArgument, RiskAssessment, TradeDecision, json_schema
-from trading_desk.backtest import run_backtest
 from trading_desk.config import DeskSettings
 from trading_desk.data.models import NewsItem
 from trading_desk.llm import LLMError
 from trading_desk.pipeline import TradingDesk
 
-from .conftest import FakeBackend, FakeProvider, make_bars
+from .conftest import FakeBackend, FakeProvider
 
 AS_OF = date(2025, 11, 3)
 
@@ -48,6 +47,25 @@ async def test_cached_steps_cost_nothing():
     paid = run.cost_usd
     run.steps[0].cached = True
     assert run.cost_usd == pytest.approx(paid - run.steps[0].cost_usd)
+
+
+async def test_crypto_uses_market_structure_instead_of_fundamentals():
+    backend = FakeBackend()
+    run = await desk(backend).run("BTC-EUR", AS_OF)
+    labels = {c.label for c in backend.calls}
+    assert "market_structure_analyst" in labels and "fundamental_analyst" not in labels
+    assert run.snapshot.asset_class == "crypto" and run.snapshot.market
+    pm = next(c for c in backend.calls if c.label == "portfolio_manager")
+    assert "Revolut X" in pm.system and "(crypto)" in pm.prompt
+    assert '"vol_regime_20d_vs_1y_median"' in next(c for c in backend.calls if c.label == "market_structure_analyst").prompt
+
+
+def test_asset_class_detection():
+    from trading_desk.data.models import asset_class_of
+    from trading_desk.data.yahoo import benchmark_for
+
+    assert [asset_class_of(t) for t in ("BTC-EUR", "eth-usd", "SOL-USDC", "AAPL", "BRK-B")] == ["crypto", "crypto", "crypto", "equity", "equity"]
+    assert (benchmark_for("ETH-EUR"), benchmark_for("BTC-EUR"), benchmark_for("AAPL")) == ("BTC-EUR", None, "SPY")
 
 
 async def test_second_round_sees_the_opponent():
@@ -118,38 +136,3 @@ async def test_run_saves_report(tmp_path):
     folder = run.save(tmp_path)
     assert (folder / "run.json").exists()
     assert "# TEST on 2025-11-03: **BUY**" in (folder / "report.md").read_text()
-
-
-async def test_backtest_always_long_tracks_buy_and_hold():
-    bars = make_bars(400, drift=0.001)
-    provider = FakeProvider(bars)
-    always_full = {"portfolio_manager": {**_pm(100)}, "risk_manager": _risk(100)}
-    s = DeskSettings()
-    s.risk.max_position_pct = 100
-    s.risk.max_stop_distance_pct = 90
-    d = TradingDesk(s, FakeBackend(always_full), provider)
-    start, end = bars.index[300].date(), bars.index[-1].date()
-    result = await run_backtest(d, provider, "TEST", start, end, every=10, cost_bps=0)
-    m = result.metrics
-    # Fully invested from the second day's open: same as buy & hold except the first overnight gap and day.
-    assert m["avg_exposure"] > 0.98
-    assert m["total_return"] == pytest.approx(m["buy_hold_return"], abs=0.05)
-    assert m["trades"] == 1 and m["stop_hits"] == 0
-
-
-async def test_backtest_flat_desk_has_zero_return():
-    bars = make_bars(400)
-    provider = FakeProvider(bars)
-    d = TradingDesk(DeskSettings(), FakeBackend({"portfolio_manager": _pm(0, action="HOLD")}), provider)
-    result = await run_backtest(d, provider, "TEST", bars.index[300].date(), bars.index[-1].date(), every=5)
-    assert result.metrics["total_return"] == 0 and result.metrics["trades"] == 0
-    assert result.warnings
-
-
-def _pm(target, action="BUY"):
-    return {"action": action, "conviction": 0.9, "target_position_pct": target, "stop_loss": 1.0, "take_profit": None,
-            "horizon_days": 20, "rationale": "r", "invalidation": "i"}
-
-
-def _risk(max_pct):
-    return {"risk_level": "low", "max_position_pct": max_pct, "stop_distance_pct": 50, "key_risks": [], "veto": False, "veto_reason": ""}

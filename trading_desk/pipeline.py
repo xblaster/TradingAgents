@@ -65,8 +65,10 @@ class TradingDesk:
         log.info("%s %s: snapshot ready (%s mode, close %.2f)", snap.ticker, as_of, snap.mode, snap.last_close)
         steps: list[StepRecord] = []
 
+        crypto = snap.asset_class == "crypto"
+
         def sys(role: str, web: bool = False) -> str:
-            return prompts.system_prompt(role, as_of=as_of.isoformat(), language=s.language, web=web)
+            return prompts.system_prompt(role, as_of=as_of.isoformat(), language=s.language, web=web, crypto=crypto)
 
         def track(result: AgentResult):
             steps.append(result.record)
@@ -74,10 +76,11 @@ class TradingDesk:
 
         # 1. Analysts, in parallel.
         web = s.web_search and snap.mode == "live"
-        analyst_jobs = {
-            "technical": (sys(prompts.TECHNICAL), self._technical_prompt(snap), ()),
-            "fundamental": (sys(prompts.FUNDAMENTAL), self._fundamental_prompt(snap), ()),
-        }
+        analyst_jobs = {"technical": (sys(prompts.TECHNICAL), self._technical_prompt(snap), ())}
+        if crypto:
+            analyst_jobs["market_structure"] = (sys(prompts.MARKET_STRUCTURE), self._market_prompt(snap), ())
+        else:
+            analyst_jobs["fundamental"] = (sys(prompts.FUNDAMENTAL), self._fundamental_prompt(snap), ())
         if snap.news or web:  # an analyst with nothing to read would only add a low-confidence "neutral"
             analyst_jobs["news"] = (sys(prompts.NEWS, web=web), self._news_prompt(snap), ("WebSearch",) if web else ())
         results = await asyncio.gather(*(
@@ -133,13 +136,16 @@ class TradingDesk:
     @staticmethod
     def _header(snap: Snapshot) -> str:
         notes = "\n".join(f"- {n}" for n in snap.notes) or "- none"
-        return f"Ticker: {snap.ticker}\nAnalysis date: {snap.as_of} ({snap.mode} mode, last bar {snap.last_bar_date}, close {snap.last_close})\nData caveats:\n{notes}\n"
+        return f"Ticker: {snap.ticker} ({snap.asset_class})\nAnalysis date: {snap.as_of} ({snap.mode} mode, last bar {snap.last_bar_date}, close {snap.last_close})\nData caveats:\n{notes}\n"
 
     def _technical_prompt(self, snap: Snapshot) -> str:
         return f"{self._header(snap)}\nIndicators, benchmark comparison and the last 10 daily bars:\n{snap.block('technicals', 'benchmark', 'recent_bars')}\n\nGive your technical assessment."
 
     def _fundamental_prompt(self, snap: Snapshot) -> str:
         return f"{self._header(snap)}\nQuarterly statements public at the analysis date, and live profile if any:\n{snap.block('fundamentals', 'profile')}\n\nGive your fundamental assessment."
+
+    def _market_prompt(self, snap: Snapshot) -> str:
+        return f"{self._header(snap)}\nMarket structure, benchmark comparison and live profile if any:\n{snap.block('market', 'benchmark', 'profile')}\n\nGive your market-structure assessment."
 
     def _news_prompt(self, snap: Snapshot) -> str:
         if snap.news:

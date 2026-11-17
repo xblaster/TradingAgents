@@ -14,6 +14,7 @@ dependencies = [
     "pandas>=2.2",
     "numpy>=1.26",
     "yfinance>=0.2.50",
+    "cryptography>=41",  # Ed25519 request signing for Revolut X
 ]
 
 [project.optional-dependencies]

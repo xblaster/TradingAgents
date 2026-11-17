@@ -66,26 +66,34 @@ async def _analyze(args: argparse.Namespace) -> int:
 
 
 async def _backtest(args: argparse.Namespace) -> int:
-    from .backtest import run_backtest
+    from .backtest import BASELINES, run_backtest
     from .pipeline import TradingDesk
+    from .report import strategy_table
 
     settings = _settings(args)
+    if args.max_position is not None:
+        settings.risk.max_position_pct = args.max_position
+    if args.knowledge_cutoff:
+        settings.llm.knowledge_cutoff = args.knowledge_cutoff
+    strategies = tuple(BASELINES) if args.no_llm else tuple(s.strip() for s in args.strategies.split(","))
     provider = YahooProvider()
-    desk = TradingDesk(settings, build_backend(settings, not args.no_cache), provider)
+    desk = TradingDesk(settings, build_backend(settings, not args.no_cache), provider) if "llm" in strategies else None
+
     def on_decision(run) -> None:
         run.save(settings.results_dir)  # every decision stays auditable
         d = run.decision
         print(f"  {run.as_of}  {d.action:<4} -> {d.target_position_pct:5.1f}%  conv {d.conviction:.2f}  (${run.cost_usd:.3f})", flush=True)
 
     result = await run_backtest(
-        desk, provider, args.ticker, args.start, args.end, every=args.every, cost_bps=args.cost_bps, on_decision=on_decision,
+        desk, provider, args.ticker, args.start, args.end, every=args.every, cost_bps=args.cost_bps,
+        max_position_pct=settings.risk.max_position_pct, strategies=strategies, on_decision=on_decision,
     )
     folder = result.save(settings.results_dir)
-    m = result.metrics
-    print(f"\n{result.warnings[0]}\n")
-    print(f"  Strategy  {m['total_return'] * 100:+.2f}%  sharpe {m['sharpe']:.2f}  maxDD {m['max_drawdown'] * 100:.1f}%")
-    print(f"  Buy&hold  {m['buy_hold_return'] * 100:+.2f}%  sharpe {m['buy_hold_sharpe']:.2f}  maxDD {m['buy_hold_max_drawdown'] * 100:.1f}%")
-    print(f"  Exposure {m['avg_exposure'] * 100:.0f}%, trades {m['trades']}, LLM cost ${m['llm_cost_usd']:.2f}, report: {folder / 'report.md'}")
+    print(f"\n{result.ticker} {result.start} -> {result.end}, every {result.every} bars, {result.cost_bps:g} bps, cap {result.max_position_pct:g}%\n")
+    for w in result.warnings:
+        print(f"! {w}")
+    print("\n".join(strategy_table(result)))
+    print(f"\nReport: {folder / 'report.md'}")
     return 0
 
 
@@ -109,6 +117,25 @@ async def _doctor(args: argparse.Namespace) -> int:
     except Exception as exc:
         ok = False
         print(f"[FAIL] Yahoo data: {exc}")
+
+    from .revolutx import RevolutXClient, summarize_order_book
+
+    client = RevolutXClient.from_env()
+    try:
+        book = summarize_order_book(await client.public_order_book("BTC-EUR"))
+        print(f"[ok] Revolut X public order book: BTC-EUR bid {book['best_bid']} / ask {book['best_ask']} ({book['spread_bps']} bps)")
+    except Exception as exc:
+        ok = False
+        print(f"[FAIL] Revolut X: {exc}")
+    if client.authenticated:
+        try:
+            balances = await client.balances()
+            print(f"[ok] Revolut X authenticated: {len(balances)} balances visible")
+        except Exception as exc:
+            ok = False
+            print(f"[FAIL] Revolut X authentication: {exc}")
+    else:
+        print("[--] Revolut X API key not configured (REVOLUTX_API_KEY): public data only")
     return 0 if ok else 1
 
 
@@ -136,8 +163,12 @@ def _parser() -> argparse.ArgumentParser:
     b.add_argument("ticker")
     b.add_argument("--start", type=date.fromisoformat, required=True)
     b.add_argument("--end", type=date.fromisoformat, default=date.today())
-    b.add_argument("--every", type=int, default=5, help="Trading days between decisions")
-    b.add_argument("--cost-bps", type=float, default=5.0, help="Transaction cost per unit of turnover, in bps")
+    b.add_argument("--every", type=int, default=5, help="Bars between decisions (crypto: days)")
+    b.add_argument("--cost-bps", type=float, help="Cost per unit of turnover in bps (default: 15 crypto, 5 equity)")
+    b.add_argument("--max-position", type=float, help="Position cap in %% for every strategy (default: risk.max_position_pct)")
+    b.add_argument("--strategies", default="llm,buy_hold,trend_sma,momentum", help="Comma-separated: llm,buy_hold,trend_sma,momentum")
+    b.add_argument("--no-llm", action="store_true", help="Baselines only: free, fast, any period length")
+    b.add_argument("--knowledge-cutoff", type=date.fromisoformat, help="Models' training cutoff, to flag contaminated periods")
 
     d = sub.add_parser("doctor", help="Check the Claude CLI and the data source")
     d.add_argument("--config")

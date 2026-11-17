@@ -15,6 +15,7 @@ timeout_s = 300
 max_retries = 2
 max_concurrency = 4
 cache_dir = ".desk_cache/llm"
+knowledge_cutoff = 2026-06-30  # models' training cutoff: backtests after it are uncontaminated
 
 [risk]
 max_position_pct = 20      # hard cap, % of portfolio
