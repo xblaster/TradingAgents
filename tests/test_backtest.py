@@ -144,5 +144,19 @@ async def test_invalid_strategy_requests():
     provider = FakeProvider()
     with pytest.raises(ValueError, match="Unknown"):
         await run_backtest(None, provider, "X", date(2025, 6, 1), date(2025, 7, 1), strategies=("magic",))
-    with pytest.raises(ValueError, match="needs a desk"):
-        await run_backtest(None, provider, "X", date(2025, 6, 1), date(2025, 7, 1), strategies=("llm",))
+    for name in ("llm", "hybrid"):
+        with pytest.raises(ValueError, match="need a desk"):
+            await run_backtest(None, provider, "X", date(2025, 6, 1), date(2025, 7, 1), strategies=(name,))
+
+
+async def test_stats_and_hybrid_strategies_report_routes():
+    provider = FakeProvider(make_bars(900, start=date(2023, 6, 1), drift=0.002))
+    s = DeskSettings()
+    desk = TradingDesk(s, FakeBackend(), provider)
+    res = await run_backtest(desk, provider, "ETH-EUR", date(2025, 6, 1), date(2025, 8, 31), every=14, strategies=("stats", "hybrid"))
+    st, hy = res.strategies["stats"], res.strategies["hybrid"]
+    assert st["decisions"] == sum(v for k, v in st.items() if k.startswith("route_"))
+    assert not any(k in st for k in ("route_llm_gem", "route_llm_last_resort"))  # stats never calls the LLM
+    llm_routes = hy.get("route_llm_gem", 0) + hy.get("route_llm_last_resort", 0)
+    assert (hy["llm_cost_usd"] > 0) == (llm_routes > 0)
+    assert st["psr"] is None or 0 <= st["psr"] <= 1

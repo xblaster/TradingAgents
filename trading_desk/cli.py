@@ -175,6 +175,107 @@ async def _portfolio(args: argparse.Namespace) -> int:
     return 0
 
 
+def _universe(spec: str) -> tuple[str, ...]:
+    from .portfolio import UNIVERSES
+
+    return UNIVERSES.get(spec) or tuple(t.strip().upper() for t in spec.split(",") if t.strip())
+
+
+async def _screen(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .decision import HybridDesk
+    from .pipeline import TradingDesk
+    from .screener import RULES, render_screen, screen
+
+    provider = YahooProvider()
+    sc = await screen(provider, _universe(args.universe), args.date)
+    text = render_screen(sc)
+    out = Path(args.output or f"results/screens/{sc.as_of}.md")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text)
+    print(text)
+
+    gem_assets = list(dict.fromkeys(t for t, _ in sc.gems))[: args.max_llm]
+    if not args.llm or not gem_assets:
+        print(f"LLM calls: 0 ({'no gem' if not gem_assets else 'use --llm to review gems'}). Report: {out}")
+        return 0
+    settings = _settings(args)
+    hybrid = HybridDesk(settings, provider, TradingDesk(settings, build_backend(settings, not args.no_cache), provider),
+                        universe=_universe(args.universe), llm_last_resort=False)
+    total = 0.0
+    print(f"LLM review of {len(gem_assets)} gem(s):")
+    for t in gem_assets:
+        d = await hybrid.decide(t, args.date)
+        total += d.llm_cost_usd
+        rules = ", ".join(f"{g['rule']} {RULES[g['rule']].name}" for g in d.gems)
+        print(f"  {t:<9} [{rules}] -> {d.action} {d.target_position_pct:.1f}% ({d.decided_by}, ${d.llm_cost_usd:.3f})")
+        if d.llm_run:
+            d.llm_run.save(settings.results_dir)
+    print(f"LLM cost ${total:.3f}. Report: {out}")
+    return 0
+
+
+async def _decide(args: argparse.Namespace) -> int:
+    from .decision import HybridDesk
+    from .pipeline import TradingDesk
+
+    settings = _settings(args)
+    provider = YahooProvider()
+    llm = None if args.no_llm else TradingDesk(settings, build_backend(settings, not args.no_cache), provider)
+    universe = _universe(args.universe) if args.universe else None
+    hybrid = HybridDesk(settings, provider, llm, universe=universe, llm_last_resort=not args.no_last_resort)
+    d = await hybrid.decide(args.ticker, args.date, current_position_pct=args.position)
+    print(f"\n{d.ticker} {d.as_of}: {d.action} -> {d.target_position_pct:.1f}% (from {d.current_position_pct:.1f}%), stop {d.stop_loss or '-'}")
+    print(f"  decided by: {d.decided_by}   LLM cost: ${d.llm_cost_usd:.3f}")
+    print(f"  statistics: {d.stats.action} {d.stats.target_position_pct:.1f}%, {'clear' if d.stats.clear else 'ambiguous'}; " + "; ".join(d.stats.reasons))
+    for g in d.gems:
+        print(f"  gem {g['rule']}: {g['evidence']}")
+    if d.llm_run:
+        folder = d.llm_run.save(settings.results_dir)
+        print(f"  LLM report: {folder / 'report.md'}")
+    return 0
+
+
+async def _stats(args: argparse.Namespace) -> int:
+    from datetime import timedelta
+
+    import numpy as np
+
+    from .data.models import asset_class_of, periods_per_year
+    from .stats import diagnostics as dg, performance as pf, regimes, significance as sg
+
+    ticker = args.ticker.upper()
+    ppy = periods_per_year(asset_class_of(ticker))
+    bars = await YahooProvider().prices(ticker, args.date - timedelta(days=args.days), args.date)
+    close = bars["Close"].dropna()
+    r = close.pct_change().dropna()
+
+    def show(title: str, d: dict) -> None:
+        print(f"\n{title}")
+        for k, v in d.items():
+            if isinstance(v, dict):
+                v = ", ".join(f"{kk}={vv:.4g}" if isinstance(vv, float) else f"{kk}={vv}" for kk, vv in v.items())
+            elif isinstance(v, float):
+                v = f"{v:.4g}"
+            print(f"  {k:<28} {v}")
+
+    print(f"{ticker}: {len(close)} daily bars, {close.index[0].date()} -> {close.index[-1].date()}, {ppy} periods/year")
+    show("Performance and risk", pf.summary(r, ppy))
+    show("Significance", {
+        "psr_sharpe_above_0": sg.probabilistic_sharpe_ratio(r),
+        "min_track_record_days_95": sg.min_track_record_length(r),
+        **{f"mean_{k}": v for k, v in sg.mean_return_tstat(r).items()},
+        "sharpe_bootstrap_90": sg.bootstrap_ci(r, sg.annualized_sharpe_stat(ppy), n_boot=500),
+        "cagr_bootstrap_90": sg.bootstrap_ci(r, sg.cagr_stat(ppy), n_boot=500),
+    })
+    diag = dg.diagnose(close, ppy)
+    show("Time-series diagnostics", {k: v for k, v in diag.items() if v is not None})
+    show("Regimes", {"volatility": regimes.volatility_regime(close, ppy=ppy), "trend": regimes.trend_regime(close, ppy),
+                     "markov_switching": regimes.markov_switching(close) or "did not converge"})
+    return 0
+
+
 async def _doctor(args: argparse.Namespace) -> int:
     settings = DeskSettings.load(args.config)
     ok = True
@@ -263,6 +364,26 @@ def _parser() -> argparse.ArgumentParser:
     pf.add_argument("--holdings", help="e.g. BTC-EUR=0.01,ETH-EUR=0.5")
     pf.add_argument("--from-revolutx", action="store_true", help="Read balances with REVOLUTX_API_KEY")
 
+    sc = sub.add_parser("screen", parents=[common], help="Statistical screen of a universe; the LLM only reviews gems (--llm)")
+    sc.add_argument("--universe", default="extended", help="core | extended | comma-separated tickers")
+    sc.add_argument("--date", type=date.fromisoformat, default=date.today())
+    sc.add_argument("--llm", action="store_true", help="Send flagged gems to the LLM desk")
+    sc.add_argument("--max-llm", type=int, default=3, help="At most this many gems reviewed by the LLM")
+    sc.add_argument("--output", help="Markdown report path")
+
+    dc = sub.add_parser("decide", parents=[common], help="Stats-first decision; the LLM only for gems or as last resort")
+    dc.add_argument("ticker")
+    dc.add_argument("--date", type=date.fromisoformat, default=date.today())
+    dc.add_argument("--position", type=float, default=0.0)
+    dc.add_argument("--universe", help="Universe for ranks/cointegration (default: Revolut X pairs for crypto)")
+    dc.add_argument("--no-llm", action="store_true", help="Statistics only")
+    dc.add_argument("--no-last-resort", action="store_true", help="Hold instead of asking the LLM when statistics are ambiguous")
+
+    stt = sub.add_parser("stats", help="Full statistical report on one asset (no LLM)")
+    stt.add_argument("ticker")
+    stt.add_argument("--date", type=date.fromisoformat, default=date.today())
+    stt.add_argument("--days", type=int, default=730, help="History length")
+
     d = sub.add_parser("doctor", help="Check the Claude CLI and the data source")
     d.add_argument("--config")
     return p
@@ -271,8 +392,8 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
-    handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "paper": _paper,
-               "portfolio": _portfolio, "doctor": _doctor}[args.command]
+    handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "paper": _paper, "portfolio": _portfolio,
+               "screen": _screen, "decide": _decide, "stats": _stats, "doctor": _doctor}[args.command]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

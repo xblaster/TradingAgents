@@ -59,9 +59,10 @@ class TradingDesk:
         self.backend = backend
         self.provider = provider
 
-    async def run(self, ticker: str, as_of: date, current_position_pct: float = 0.0) -> DeskRun:
+    async def run(self, ticker: str, as_of: date, current_position_pct: float = 0.0, stats_context: dict | None = None) -> DeskRun:
         s = self.settings
         snap = await self.provider.snapshot(ticker.upper(), as_of, s.lookback_days)
+        snap.stats = stats_context
         log.info("%s %s: snapshot ready (%s mode, close %.2f)", snap.ticker, as_of, snap.mode, snap.last_close)
         steps: list[StepRecord] = []
 
@@ -136,7 +137,13 @@ class TradingDesk:
     @staticmethod
     def _header(snap: Snapshot) -> str:
         notes = "\n".join(f"- {n}" for n in snap.notes) or "- none"
-        return f"Ticker: {snap.ticker} ({snap.asset_class})\nAnalysis date: {snap.as_of} ({snap.mode} mode, last bar {snap.last_bar_date}, close {snap.last_close})\nData caveats:\n{notes}\n"
+        header = f"Ticker: {snap.ticker} ({snap.asset_class})\nAnalysis date: {snap.as_of} ({snap.mode} mode, last bar {snap.last_bar_date}, close {snap.last_close})\nData caveats:\n{notes}\n"
+        if snap.stats:
+            header += (
+                "\nStatistical diagnostics computed in code (reliable; the desk's statistics come first and you are consulted "
+                f"for the reason given in why_you_are_consulted):\n{json.dumps(snap.stats, indent=1, default=str)}\n"
+            )
+        return header
 
     def _technical_prompt(self, snap: Snapshot) -> str:
         return f"{self._header(snap)}\nIndicators, benchmark comparison and the last 10 daily bars:\n{snap.block('technicals', 'benchmark', 'recent_bars')}\n\nGive your technical assessment."

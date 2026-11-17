@@ -24,14 +24,18 @@ def make_bars(n: int = 300, start: date = date(2025, 1, 1), drift: float = 0.000
 
 
 class FakeProvider:
-    def __init__(self, bars: pd.DataFrame | None = None):
+    def __init__(self, bars: pd.DataFrame | None = None, others: dict[str, pd.DataFrame] | None = None):
         self.bars = bars if bars is not None else make_bars()
+        self.others = others or {}
+
+    def frame(self, ticker: str) -> pd.DataFrame:
+        return self.others.get(ticker, self.bars)
 
     async def prices(self, ticker: str, start: date, end: date) -> pd.DataFrame:
-        return self.bars.loc[pd.Timestamp(start) : pd.Timestamp(end)]
+        return self.frame(ticker).loc[pd.Timestamp(start) : pd.Timestamp(end)]
 
     async def snapshot(self, ticker: str, as_of: date, lookback_days: int = 400) -> Snapshot:
-        bars = self.bars.loc[pd.Timestamp(as_of - timedelta(days=lookback_days)) : pd.Timestamp(as_of)]
+        bars = self.frame(ticker).loc[pd.Timestamp(as_of - timedelta(days=lookback_days)) : pd.Timestamp(as_of)]
         ac = asset_class_of(ticker)
         return Snapshot(
             ticker=ticker, as_of=as_of, mode="historical", asset_class=ac, last_bar_date=bars.index[-1].date(),

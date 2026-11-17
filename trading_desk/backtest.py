@@ -156,7 +156,17 @@ def metrics(run: StrategyRun, ppy: int) -> dict[str, float | None]:
         "trades": float(run.trades),
         "stop_hits": float(run.stop_hits),
         "fees": run.fees,
+        "psr": _psr(rets),
     }
+
+
+def _psr(rets: pd.Series) -> float | None:
+    from .stats.significance import probabilistic_sharpe_ratio
+
+    if len(rets) < 30 or rets.std() == 0:
+        return None
+    value = probabilistic_sharpe_ratio(rets)
+    return float(value) if np.isfinite(value) else None
 
 
 # ------------------------------------------------------------------ baselines
@@ -204,11 +214,11 @@ async def run_backtest(
     if max_position_pct is None:
         max_position_pct = desk.settings.risk.max_position_pct if desk else 100.0
     cap = max_position_pct / 100
-    unknown = set(strategies) - {"llm", *BASELINES}
+    unknown = set(strategies) - {"llm", "stats", "hybrid", *BASELINES}
     if unknown:
         raise ValueError(f"Unknown strategies: {sorted(unknown)}")
-    if "llm" in strategies and desk is None:
-        raise ValueError("The llm strategy needs a desk")
+    if {"llm", "hybrid"} & set(strategies) and desk is None:
+        raise ValueError("The llm and hybrid strategies need a desk")
 
     bars = await provider.prices(ticker, start - timedelta(days=WARMUP_DAYS), end)
     in_range = bars.index >= pd.Timestamp(start)
@@ -233,9 +243,36 @@ async def run_backtest(
             on_decision(run)
         return Signal(d.target_position_pct / 100, d.stop_loss)
 
+    from .config import DeskSettings
+    from .decision import HybridDesk
+
+    routes: dict[str, dict[str, int]] = {}
+
+    def hybrid_decider(name: str, hybrid: HybridDesk) -> Decider:
+        async def decide(i: int, hist: pd.DataFrame, w: float) -> Signal:
+            nonlocal llm_cost
+            d = await hybrid.decide(ticker, hist.index[-1].date(), current_position_pct=round(w * 100, 2))
+            routes.setdefault(name, {})
+            routes[name][d.decided_by] = routes[name].get(d.decided_by, 0) + 1
+            if name == "hybrid":
+                llm_cost += d.llm_cost_usd
+            return Signal(d.target_position_pct / 100, d.stop_loss)
+        return decide
+
+    settings = desk.settings if desk else DeskSettings()
+    if desk is None:
+        settings.risk.max_position_pct = max_position_pct
+
     runs: dict[str, StrategyRun] = {}
     for name in strategies:
-        decider = llm if name == "llm" else baseline(name, cap, ppy)
+        if name == "llm":
+            decider = llm
+        elif name == "stats":
+            decider = hybrid_decider(name, HybridDesk(settings, provider, None, llm_on_gems=False, llm_last_resort=False))
+        elif name == "hybrid":
+            decider = hybrid_decider(name, HybridDesk(settings, provider, desk))
+        else:
+            decider = baseline(name, cap, ppy)
         runs[name] = await simulate(bars, start_idx, decider, every=every, cost_bps=cost_bps)
     # Reference: fully invested, no cap, no costs beyond the first fill.
     runs["buy_hold_100"] = await simulate(bars, start_idx, baseline("buy_hold", 1.0, ppy), every=every, cost_bps=cost_bps)
@@ -244,14 +281,21 @@ async def run_backtest(
     if "llm" in stats:
         stats["llm"]["decisions"] = float(runs["llm"].decisions)
         stats["llm"]["llm_cost_usd"] = round(llm_cost, 4)
+    for name, counts in routes.items():
+        stats[name]["decisions"] = float(runs[name].decisions)
+        for route, n in counts.items():
+            stats[name][f"route_{route}"] = float(n)
+    if "hybrid" in stats:
+        stats["hybrid"]["llm_cost_usd"] = round(llm_cost - stats.get("llm", {}).get("llm_cost_usd", 0.0), 4)
 
     equity = [
         {"date": d.isoformat(), **{name: round(run.curve[k], 6) for name, run in runs.items()}, "llm_weight": round(runs["llm"].weights[k], 4) if "llm" in runs else None}
         for k, d in enumerate(dates)
     ]
-    warnings = [LOOKAHEAD_WARNING] if "llm" in strategies else []
+    uses_llm = bool({"llm", "hybrid"} & set(strategies))
+    warnings = [LOOKAHEAD_WARNING] if uses_llm else []
     cutoff = desk.settings.llm.knowledge_cutoff if desk else None
-    if "llm" in strategies and cutoff:
+    if uses_llm and cutoff:
         warnings.append(
             f"Whole period is after the declared knowledge cutoff ({cutoff}): an uncontaminated test."
             if start > cutoff else f"Period starts before the declared knowledge cutoff ({cutoff}): LLM results are contaminated."

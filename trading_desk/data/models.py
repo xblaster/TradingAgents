@@ -37,6 +37,7 @@ class Snapshot(BaseModel):
     mode: Literal["live", "historical"]
     asset_class: AssetClass = "equity"
     market: dict[str, Any] | None = None  # crypto: market structure + live order book
+    stats: dict[str, Any] | None = None  # statistical pack from the screener, when the LLM is consulted by the hybrid desk
     last_bar_date: date
     last_close: float
     currency: str | None = None

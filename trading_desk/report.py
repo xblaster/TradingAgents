@@ -60,6 +60,8 @@ def render_markdown(run: "DeskRun") -> str:
 
 STRATEGY_LABELS = {
     "llm": "LLM desk",
+    "stats": "Statistics only",
+    "hybrid": "Stats + LLM for gems / last resort",
     "buy_hold": "Buy & hold (capped)",
     "trend_sma": "Trend SMA20/50 (capped)",
     "momentum": "Momentum 3m (capped)",
@@ -69,14 +71,20 @@ STRATEGY_LABELS = {
 
 def strategy_table(result: "BacktestResult") -> list[str]:
     rows = [
-        "| strategy | return | CAGR | vol | Sharpe | max DD | exposure | trades | fees |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| strategy | return | CAGR | vol | Sharpe | PSR | max DD | exposure | trades | fees |",
+        "|---|---|---|---|---|---|---|---|---|---|",
     ]
     for name, m in result.strategies.items():
+        psr = m.get("psr")
         rows.append(
             f"| {STRATEGY_LABELS.get(name, name)} | {_pct(m['total_return'])} | {_pct(m['cagr'])} | {_pct(m['ann_vol'])} | "
-            f"{m['sharpe']:.2f} | {_pct(m['max_drawdown'])} | {m['avg_exposure'] * 100:.0f}% | {m['trades']:.0f} | {m['fees'] * 100:.2f}% |"
+            f"{m['sharpe']:.2f} | {'n/a' if psr is None else f'{psr:.2f}'} | {_pct(m['max_drawdown'])} | {m['avg_exposure'] * 100:.0f}% | {m['trades']:.0f} | {m['fees'] * 100:.2f}% |"
         )
+    routes = {n: {k[6:]: int(v) for k, v in m.items() if k.startswith("route_")} for n, m in result.strategies.items()}
+    routes = {n: r for n, r in routes.items() if r}
+    if routes:
+        rows += ["", "Who decided: " + "; ".join(f"{STRATEGY_LABELS.get(n, n)}: " + ", ".join(f"{k} {v}" for k, v in r.items()) for n, r in routes.items())]
+    rows += ["", "PSR = probability that the true Sharpe ratio is above 0, given the sample length, skewness and kurtosis (Bailey & Lopez de Prado)."]
     return rows
 
 
