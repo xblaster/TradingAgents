@@ -71,4 +71,44 @@ Même si la stratégie est VIABLE en backtest, le passage en réel suit cet ordr
 2. **Capital réel plafonné**, ordres limit post-only (0 % de frais maker) passés manuellement à partir de `desk portfolio`.
 3. Automatisation par API seulement ensuite, avec plafonds durs.
 
+## 6. Résultat v1 (2026-11-17) : NON VIABLE
+
+Rapport complet : [`reports/strategy_evaluation.md`](reports/strategy_evaluation.md), produit par `desk evaluate`.
+
+| Critère | Résultat |
+|---|---|
+| C1 CAGR > 0 | PASS (core +16,7 %, étendu +11,3 %) |
+| C2 Sharpe ≥ EW B&H | **FAIL** (core 0,64 vs 0,72 ; étendu 0,49 vs 0,54) |
+| C3 drawdown ≤ 0,6 × EW B&H | **FAIL** (core -36,3 % pour une limite de -35,6 % ; étendu -48,2 % pour -45,9 %) |
+| C4 robustesse | **FAIL** (5/12 variantes) |
+| C5 coûts doublés | PASS |
+| C6 in-sample | PASS (Sharpe 0,78 vs 0,56 ; drawdown -68 % vs -86 %) |
+
+Lecture :
+- L'effet attendu apparaît en baisse : 2025 à -0,7 % contre -16,5 % pour l'EW B&H, 2026 à -17 % contre -28 %, et en in-sample.
+- Le marché très haussier de 2023-2024 pénalise une exposition moyenne de 59 %, et le gain de drawdown reste juste sous le seuil exigé.
+- Conformément à la section 1, aucun paramètre n'est modifié pour faire passer le test.
+
+## 7. Validation prospective (pré-enregistrée le 2026-11-17)
+
+Toutes les données historiques disponibles ont maintenant été vues. Une nouvelle preuve ne peut venir que de **données futures**. Deux versions tournent en paper trading à partir de cette date, avec `desk paper run` lancé chaque jour :
+
+| Version | Différence | Statut |
+|---|---|---|
+| **v1** | Spécification de la section 2, inchangée | Hypothèse a priori |
+| **v2** | Horizons ×0,5 : `L ∈ {10, 30, 60, 125}` | **Choisie après avoir vu les résultats 2023-2026** (meilleure ligne du tableau C4). Son backtest est donc sans valeur ; seule la période prospective compte. |
+
+Conditions d'exécution, pour les deux versions :
+- prix d'exécution réels de Revolut X : achat au meilleur ask et vente au meilleur bid du carnet public, plus 9 pb de frais taker ;
+- univers étendu ;
+- 10 000 EUR fictifs au départ ;
+- benchmarks EW B&H et BTC B&H suivis sur les mêmes prix.
+
+**Critères prospectifs.** Ils sont évalués après au moins 26 semaines, sur la fenêtre prospective uniquement, et chaque version est jugée séparément :
+- P1 : rendement ≥ 0 **ou** rendement ≥ celui de l'EW B&H ;
+- P2 : Sharpe ≥ EW B&H ;
+- P3 : max drawdown ≤ 0,6 × celui de l'EW B&H.
+
+Une version qui passe P1 à P3 devient candidate au capital réel plafonné (section 5, étape 2). Le fait d'avoir deux versions est un test multiple, assumé et limité à deux.
+
 Le desk LLM n'entre pas dans cette stratégie. Il pourra être évalué plus tard comme filtre (veto) en paper trading, puisqu'aucun backtest du LLM n'est fiable avant sa date de coupure.

@@ -97,6 +97,22 @@ async def _backtest(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _evaluate(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .evaluation import evaluate, render
+
+    ev = await evaluate(YahooProvider(), end=args.end)
+    text = render(ev)
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text)
+    for c in ev.criteria:
+        print(f"  {c.code} {'PASS' if c.passed else 'FAIL'}  {c.label}\n        {c.detail}")
+    print(f"\nVerdict: {'VIABLE' if ev.viable else 'NOT VIABLE'}   (report: {out})")
+    return 0 if ev.viable else 2
+
+
 async def _doctor(args: argparse.Namespace) -> int:
     settings = DeskSettings.load(args.config)
     ok = True
@@ -170,6 +186,10 @@ def _parser() -> argparse.ArgumentParser:
     b.add_argument("--no-llm", action="store_true", help="Baselines only: free, fast, any period length")
     b.add_argument("--knowledge-cutoff", type=date.fromisoformat, help="Models' training cutoff, to flag contaminated periods")
 
+    e = sub.add_parser("evaluate", help="Run the pre-registered evaluation of the Revolut X trend strategy (STRATEGY.md)")
+    e.add_argument("--end", type=date.fromisoformat, help="End of the out-of-sample window (default: protocol date)")
+    e.add_argument("--output", default="reports/strategy_evaluation.md")
+
     d = sub.add_parser("doctor", help="Check the Claude CLI and the data source")
     d.add_argument("--config")
     return p
@@ -178,7 +198,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
-    handler = {"analyze": _analyze, "backtest": _backtest, "doctor": _doctor}[args.command]
+    handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "doctor": _doctor}[args.command]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:
