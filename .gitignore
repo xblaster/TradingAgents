@@ -1,11 +1,11 @@
-.venv
-results
+.venv/
 env/
 __pycache__/
-.DS_Store
-*.csv
-src/
-eval_results/
-eval_data/
 *.egg-info/
+.pytest_cache/
+.DS_Store
 .env
+
+# Runtime output
+results/
+.desk_cache/
