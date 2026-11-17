@@ -50,6 +50,7 @@ class Evaluation:
     yearly: dict[str, dict[str, float]]
     weights_now: dict[str, float]
     notes: list[str] = field(default_factory=list)
+    significance: dict[str, Any] = field(default_factory=dict)
 
     @property
     def viable(self) -> bool:
@@ -156,7 +157,37 @@ async def evaluate(provider: DataProvider, end: date | None = None) -> Evaluatio
         f"Data: Yahoo daily bars, {closes.index[0].date()} to {closes.index[-1].date()}; the out-of-sample window ends {oos[1]}.",
         "Universe chosen among pairs listed on Revolut X today: survivorship bias favours the extended universe.",
     ]
-    return Evaluation(criteria=criteria, tables=tables, variants=variants, yearly=yearly, weights_now=weights_now, notes=notes)
+    significance = _significance(runs, variants)
+    return Evaluation(criteria=criteria, tables=tables, variants=variants, yearly=yearly, weights_now=weights_now, notes=notes, significance=significance)
+
+
+def _significance(runs: dict, variants: list[dict[str, Any]]) -> dict[str, Any]:
+    """Informational statistics on the out-of-sample core results. They do not change the verdict."""
+    import math
+
+    from .stats import significance as sg
+
+    def rets(key: str, kind: str) -> pd.Series:
+        return pd.Series(runs[(key, kind)].equity).pct_change().dropna()
+
+    strat, ew = rets("oos_core", "strategy"), rets("oos_core", "ew_bh")
+    n_trials = 1 + len(variants)  # base configuration + robustness variants
+    per_period = [v["sharpe"] / math.sqrt(365) for v in variants]
+    return {
+        "strategy": {
+            "psr": sg.probabilistic_sharpe_ratio(strat),
+            "deflated": sg.deflated_sharpe_ratio(strat, n_trials, float(pd.Series(per_period).var())),
+            "sharpe_ci": sg.bootstrap_ci(strat, sg.annualized_sharpe_stat(365), n_boot=1000),
+            "cagr_ci": sg.bootstrap_ci(strat, sg.cagr_stat(365), n_boot=1000),
+            "min_track_record_days": sg.min_track_record_length(strat),
+        },
+        "ew_bh": {
+            "psr": sg.probabilistic_sharpe_ratio(ew),
+            "sharpe_ci": sg.bootstrap_ci(ew, sg.annualized_sharpe_stat(365), n_boot=1000),
+        },
+        "strategy_minus_ew_sharpe": sg.sharpe_difference_test(strat, ew, n_boot=1000),
+        "n_trials": n_trials,
+    }
 
 
 # ------------------------------------------------------------------ report
@@ -192,6 +223,22 @@ def render(ev: Evaluation) -> str:
     years = sorted(next(iter(ev.yearly.values())))
     out += ["", "## Calendar years, out-of-sample, core", "", "| | " + " | ".join(years) + " |", "|---|" + "---|" * len(years)]
     out += [f"| {LABELS[k]} | " + " | ".join(_p(v.get(y)) for y in years) + " |" for k, v in ev.yearly.items()]
+    sig = ev.significance
+    if sig:
+        s, e, d = sig["strategy"], sig["ew_bh"], sig["strategy_minus_ew_sharpe"]
+        mintrl = s["min_track_record_days"]
+        out += [
+            "", "## Statistical significance, out-of-sample, core (informational: does not change the verdict)", "",
+            "| | value |", "|---|---|",
+            f"| Strategy PSR (P[true Sharpe > 0]) | {s['psr']:.2f} |",
+            f"| Strategy Deflated Sharpe ({sig['n_trials']} configurations tested) | {s['deflated']['dsr']:.2f} |",
+            f"| Strategy Sharpe, 90% stationary-bootstrap CI | {s['sharpe_ci']['estimate']:.2f} [{s['sharpe_ci']['low']:.2f}, {s['sharpe_ci']['high']:.2f}] |",
+            f"| Strategy CAGR, 90% CI | {_p(s['cagr_ci']['estimate'])} [{_p(s['cagr_ci']['low'])}, {_p(s['cagr_ci']['high'])}] |",
+            f"| Track record needed for 95% confidence in Sharpe > 0 | {'never at this Sharpe' if mintrl == float('inf') else f'{mintrl:.0f} days ({mintrl / 365:.1f} years)'} |",
+            f"| EW buy & hold PSR | {e['psr']:.2f} |",
+            f"| EW buy & hold Sharpe, 90% CI | {e['sharpe_ci']['estimate']:.2f} [{e['sharpe_ci']['low']:.2f}, {e['sharpe_ci']['high']:.2f}] |",
+            f"| Sharpe(strategy) - Sharpe(EW), 90% CI | {d['difference']:+.2f} [{d['low_90']:+.2f}, {d['high_90']:+.2f}], P(strategy better) = {d['p_a_better']:.0%} |",
+        ]
     out += ["", "## Parameter robustness (C4), out-of-sample, core", "", "| lookbacks | rebalance | CAGR | Sharpe | max DD | C2 & C3 |", "|---|---|---|---|---|---|"]
     out += [f"| {v['lookbacks']} | {v['every']}d | {_p(v['cagr'])} | {v['sharpe']:.2f} | {_p(v['max_drawdown'])} | {'pass' if v['pass'] else 'fail'} |" for v in ev.variants]
     out += ["", "## Target weights at the last close (extended universe)", ""]

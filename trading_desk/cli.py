@@ -8,7 +8,7 @@ import json
 import logging
 import shutil
 import sys
-from datetime import date
+from datetime import date, timedelta
 
 from .config import DeskSettings
 from .data import YahooProvider
@@ -276,6 +276,23 @@ async def _stats(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _gem_study(args: argparse.Namespace) -> int:
+    import json
+    from pathlib import Path
+
+    from .gem_study import gem_event_study, render_gem_study
+
+    res = await gem_event_study(YahooProvider(), _universe(args.universe), args.start, args.end, step=args.step)
+    text = render_gem_study(res)
+    out = Path(args.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text)
+    out.with_suffix(".json").write_text(json.dumps(res, indent=1))
+    print(text)
+    print(f"Report: {out}")
+    return 0
+
+
 async def _doctor(args: argparse.Namespace) -> int:
     settings = DeskSettings.load(args.config)
     ok = True
@@ -384,6 +401,13 @@ def _parser() -> argparse.ArgumentParser:
     stt.add_argument("--date", type=date.fromisoformat, default=date.today())
     stt.add_argument("--days", type=int, default=730, help="History length")
 
+    gs = sub.add_parser("gem-study", help="Event study: do the gem rules predict forward excess returns?")
+    gs.add_argument("--universe", default="extended")
+    gs.add_argument("--start", type=date.fromisoformat, default=date(2023, 1, 1))
+    gs.add_argument("--end", type=date.fromisoformat, default=date.today() - timedelta(days=31))
+    gs.add_argument("--step", type=int, default=7)
+    gs.add_argument("--output", default="reports/gem_study.md")
+
     d = sub.add_parser("doctor", help="Check the Claude CLI and the data source")
     d.add_argument("--config")
     return p
@@ -393,7 +417,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
     handler = {"analyze": _analyze, "backtest": _backtest, "evaluate": _evaluate, "paper": _paper, "portfolio": _portfolio,
-               "screen": _screen, "decide": _decide, "stats": _stats, "doctor": _doctor}[args.command]
+               "screen": _screen, "decide": _decide, "stats": _stats, "gem-study": _gem_study, "doctor": _doctor}[args.command]
     try:
         return asyncio.run(handler(args))
     except KeyboardInterrupt:

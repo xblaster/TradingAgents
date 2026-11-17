@@ -106,6 +106,56 @@ Chaque décision du LLM est sauvegardée (`results/<TICKER>/<date>/`), avec un r
 
 **Contamination.** Déclarez `knowledge_cutoff` : le rapport indique alors si la période est vierge, c'est-à-dire postérieure à la coupure, ou contaminée. Seule une période vierge mesure vraiment le desk LLM.
 
+## Statistiques d'abord, LLM pour les pépites
+
+Les statistiques décident par défaut. Le LLM n'est consulté que si les statistiques signalent une **pépite** ou si elles sont **ambiguës** (dernier recours, désactivable).
+
+```
+           screen statistique (gratuit, ~4 s pour 10 paires)
+                          │
+     ┌──────────── pépite G1-G5 ? ───────────┐
+     │ oui                                   │ non
+  desk LLM + pack statistique       verdict statistique clair ?
+  + raison de la consultation         │ oui          │ non
+                                   décision      LLM en dernier recours
+                                   statistique   (ou HOLD avec --no-last-resort)
+```
+
+```bash
+desk stats ETH-EUR                    # rapport statistique complet d'un actif, sans LLM
+desk screen                           # screen des 10 paires Revolut X + pépites, sans LLM
+desk screen --llm --max-llm 2         # le LLM n'examine que les pépites
+desk decide BTC-EUR --position 10     # décision « stats d'abord »
+desk decide BTC-EUR --no-llm          # statistiques seules
+desk backtest BTC-EUR --start 2024-01-01 --strategies stats,hybrid,buy_hold --max-position 100 --every 7
+desk gem-study --start 2023-01-01     # les règles « pépites » prédisent-elles quelque chose ?
+```
+
+**Boîte à outils (`trading_desk/stats/`).** Tout est testé contre des valeurs connues ou des simulations.
+
+| Famille | Outils |
+|---|---|
+| Performance et risque | CAGR, volatilité, Sharpe, Sortino, Calmar, Omega, ulcer index, durée du drawdown, VaR/CVaR historiques et de Cornish-Fisher, skew, kurtosis, tail ratio, profit factor |
+| Significativité | t-test, **Probabilistic Sharpe Ratio**, **Deflated Sharpe Ratio** (tests multiples), durée minimale de track record, IC par **bootstrap stationnaire** (Politis-Romano), test apparié de différence de Sharpe |
+| Diagnostics de série | Hurst, **variance ratio de Lo-MacKinlay** (z robuste à l'hétéroscédasticité), Ljung-Box, autocorrélations, ADF, KPSS, t-stat de tendance avec erreurs **Newey-West**, demi-vie d'Ornstein-Uhlenbeck, Jarque-Bera, z-scores robustes (médiane/MAD) |
+| Régimes | percentile de volatilité, tendance 60/120 j (avec un état « transition »), **Markov switching** à 2 états |
+| Multi-actifs | corrélations, bêta, rangs de momentum, dispersion, scan de **cointégration** Engle-Granger (spread z, demi-vie) |
+
+**Règles « pépites »** (`trading_desk/screener.py`), toutes explicites :
+
+| Code | Nom | Condition |
+|---|---|---|
+| G1 | Tendance significative émergente | t-stat HAC sur 60 j > 3, rang de momentum ≥ 70 %, pas de sur-extension |
+| G2 | Cassure confirmée | plus haut 90 j, avec un volume sur 5 j ≥ 2× la médiane, ou un z de volume > 3 |
+| G3 | Capitulation statistique | z robuste du rendement du jour < -4, ou z20 < -2,5 avec RSI < 25 |
+| G4 | Dislocation de cointégration | paire cointégrée (p < 0,05), \|z\| du spread > 2,5, demi-vie < 30 j : l'actif est la jambe bon marché |
+| G5 | Compression de volatilité | volatilité 20 j dans le décile bas de l'année, avec une tendance 120 j significative |
+
+**Ce que les chiffres disent aujourd'hui** :
+- **Desk LLM seul** (BTC-EUR, juillet-novembre 2026, période non contaminée) : 20 décisions sur 20 à HOLD, 0 % d'exposition, environ 3,70 $ dépensés, pendant que le buy & hold faisait +11 %.
+- **Statistiques seules** sur 2024-2026 : 151 décisions, dont 53 claires et 98 ambiguës. En mode hybride, ces 98 seraient soumises au LLM, soit environ 19 $ sur 3 ans.
+- **Stratégie de tendance** : l'IC à 90 % de son Sharpe est [-0,23 ; 1,47], et il faudrait **6,5 ans** d'historique pour être sûr à 95 % que son Sharpe est positif.
+
 ## Stratégie systématique Revolut X
 
 Le desk LLM est lent et coûteux, et son edge n'est pas démontré. En parallèle, le dépôt contient une **stratégie de tendance multi-actifs** sur 10 paires EUR de Revolut X. Elle est entièrement déterministe, et elle est évaluée selon un **protocole pré-enregistré** ([STRATEGY.md](STRATEGY.md), commité avant l'évaluation).
@@ -177,7 +227,7 @@ print(run.decision.action, run.decision.target_position_pct, run.cost_usd)
 ## Développement
 
 ```bash
-pytest   # 87 tests, ~1 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
+pytest   # 122 tests, ~5 s, sans réseau ni appel LLM (fausse CLI claude + faux provider)
 ```
 
 ```
@@ -192,6 +242,10 @@ trading_desk/
   portfolio.py stratégie de tendance multi-actifs + simulateur de portefeuille
   evaluation.py protocole pré-enregistré (STRATEGY.md) → verdict
   paper.py     paper trading prospectif aux prix Revolut X
+  stats/       performance, significance, diagnostics, regimes, cross_asset
+  screener.py  pack statistique par actif + règles pépites G1-G5
+  decision.py  HybridDesk : statistiques d'abord, LLM pour les pépites ou en dernier recours
+  gem_study.py étude d'événements des règles pépites
   report.py    Markdown
   cli.py       desk analyze | backtest | doctor
 ```
